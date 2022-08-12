@@ -1,106 +1,147 @@
 # Running with Docker Compose
 
-The docker-compose.yml file in this repository is fully functional to evaluate DefectDojo in your local environment. 
+The docker-compose.yml file in this repository is fully functional to evaluate DefectDojo in your local environment.
 
-Although Docker Compose is one of the supported installation methods to deploy a containerized DefectDojo in a production environment, the docker-compose.yml file is not intended for production use without first customizing it to your particular situation. [Running in Production](docs/content/running/running-in-production.md) gives advice on which adjustments are useful for performance and operational reliability. 
+Although Docker Compose is one of the supported installation methods to deploy a containerized DefectDojo in a production environment, the docker-compose.yml file is not intended for production use without first customizing it to your particular situation. [Running in Production](https://defectdojo.github.io/django-DefectDojo/getting_started/running-in-production/) gives advice on which adjustments are useful for performance and operational reliability.
 
 
 # Prerequisites
+
 *  Docker version
-    *  Installing with docker-compose requires at least docker 18.09.4 and docker-compose 1.24.0. See "Checking Docker versions" below for version errors during running docker-compose.
+    *  Installing with docker-compose requires at least Docker 19.03.0 and Docker Compose 1.28.0. See "Checking Docker versions" below for version errors during running docker-compose.
 *  Proxies
-    *  If you're behind a corporate proxy check https://docs.docker.com/network/proxy/ . 
+    *  If you're behind a corporate proxy check https://docs.docker.com/network/proxy/ .
 
 
-# Setup via Docker Compose - introduction
+# Setup via Docker Compose - Introduction
 
 DefectDojo needs several docker images to run. Two of them depend on DefectDojo code:
 
-*  django service - defectdojo/defectdojo-django image 
+*  django service - defectdojo/defectdojo-django image
 *  nginx service - defectdojo/defectdojo-nginx image
 
 The nginx image is build based on the django image.
 
 Before running the application, it's advised to build local images to make sure that you'll be working on images consistent with your current code base.
-When running the application without building images, the application will run based on: 
+When running the application without building images, the application will run based on:
 *  a previously locally built image if it exists in the docker cache
 *  else the images pulled from dockerhub
     *  https://hub.docker.com/r/defectdojo/defectdojo-django
     *  https://hub.docker.com/r/defectdojo/defectdojo-nginx
 
 
-# Setup via Docker Compose - building and running the application
+# Setup via Docker Compose - Profiles
+
+## Parameters to start docker-compose
+
+The Docker Compose setup supports 2 different databases (MySQL and PostgreSQL) and 2 different celery brokers (RabbitMQ and Redis). To make this possible, docker-compose needs to be started with the parameter `--profile` with one of these choices:
+
+- mysql-rabbitmq*
+- mysql-redis
+- postgres-rabbitmq
+- postgres-redis
+
+e.g. 
+```zsh
+./dc-up.sh mysql-redis
+```
+
+A default profile can be set with the environment variable `DD_PROFILE`. If this environment variable is set when starting the containers, the parameter for the profile needs not to be given for the start scripts.
+
+When DD_PROFILE or command-line profile is not specified, the command will run "mysql-rabbitmq" as the default profile. 
+
+The environment variables needed for the different profiles are prepared in files, which need to be included additionally with the parameter `--env-file` with a choices that fits to the profile:
+
+- ./docker/environments/mysql-rabbitmq.env
+- ./docker/environments/mysql-redis.env
+- ./docker/environments/postgres-rabbitmq.env
+- ./docker/environments/postgres-redis.env
+
+## Scripts
+
+6 shell scripts make life easier and avoid typing long commands:
+
+- `./dc-build.sh` - Build the docker images, it can take one additional parameter to be used in the build process, e.g. `./dc-build.sh --no-cache`.
+- `./dc-up.sh` - Start the docker containers in the foreground, it needs one of the profile names as a parameter, e.g. `./dc-up.sh postgres-redis`.
+- `./dc-up-d.sh` - Start the docker containers in the background, it needs one of the profile names as a parameter, e.g. `./dc-up-d.sh mysql-rabbitmq`
+- `./dc-stop.sh` - Stop the docker containers, it can take one additional parameter to be used in the stop process.
+- `./dc-down.sh` - Stop and remove the docker containers, it can take one additional parameter to be used in the stop and remove process.
+- `./dc-unittest.sh` - Utility script to aid in running a specific unit test class.  Requires a profile and test case as parameters.
+
+
+# Setup via Docker Compose - Building and running the application
+
 ## Building images
 
 To build images and put them in your local docker cache, run:
 
 ```zsh
-docker-compose build
+./dc-build.sh
 ```
 
-To build a single image, run: 
+To build a single image, run:
 
 ```zsh
-docker-compose build uwsgi
+./dc-build.sh uwsgi
 ```
 or
 
 ```
-docker-compose build nginx
+./dc-build.sh nginx
 ```
 
 > **_NOTE:_**  It's possible to add extra fixtures in folder "/docker/extra_fixtures".
 
-## Run with Docker compose in release mode
-To run the application based on previously built image (or based on dockerhub images if none was locally built), run: 
+## Run with Docker Compose in release mode
+To run the application based on previously built image (or based on dockerhub images if none was locally built), run:
 
 ```zsh
 docker/setEnv.sh release
-docker-compose up
+./dc-up.sh postgres-redis # or an other profile
 ```
 
 This will run the application based on docker-compose.yml only.
 
-In this setup, you need to rebuild django and/or nginx images after each code change and restart the containers. 
+In this setup, you need to rebuild django and/or nginx images after each code change and restart the containers.
 
 
-## Run with Docker compose in development mode with hot-reloading
+## Run with Docker Compose in development mode with hot-reloading
 
-For development, use: 
+For development, use:
 
 ```zsh
 docker/setEnv.sh dev
-docker-compose build
-docker-compose up
+./dc-build.sh
+./dc-up.sh postgres-redis # or an other profile
 ```
 
 This will run the application based on merged configurations from docker-compose.yml and docker-compose.override.dev.yml.
 
 *  Volumes are mounted to synchronize between the host and the containers :
     *  static resources (nginx container)
-    *  python code (uwsgi and celeryworker containers). 
+    *  python code (uwsgi and celeryworker containers).
 
 *  The `--py-autoreload 1` parameter in entrypoint-uwsgi-dev.sh will make uwsgi handle python hot-reloading for the **uwsgi** container.
-* Hot-reloading for the **celeryworker** container is not yet implemented. When working on deduplication for example, restart the celeryworker container with: 
+* Hot-reloading for the **celeryworker** container is not yet implemented. When working on deduplication for example, restart the celeryworker container with:
 
 ```
 docker-compose restart celeryworker
 ```
 
-*  The mysql port is forwarded to the host so that you can access your database from outside the container. 
+*  The mysql port is forwarded to the host so that you can access your database from outside the container.
 
 To update changes in static resources, served by nginx, just refresh the browser with ctrl + F5.
 
 
 *Notes about volume permissions*
 
-*If you run into permission issues with the mounted volumes, a way to fix this is changing `USER 1001` in Dockerfile.django to match your user uid and then rebuild the images. Get your user id with* 
+*If you run into permission issues with the mounted volumes, a way to fix this is changing `USER 1001` in Dockerfile.django to match your user uid and then rebuild the images. Get your user id with*
 
 ```
 id -u
 ```
 
-## Run with Docker compose in development mode with debugpy (remote debug)
+## Run with Docker Compose in development mode with debugpy (remote debug)
 
 The debug mode, offers out of the box a debugging server listening on port 3000
 
@@ -108,7 +149,7 @@ The debug mode, offers out of the box a debugging server listening on port 3000
 # switch to debug configuration
 docker/setEnv.sh debug
 # then use docker-compose as usual
-docker-compose up
+./dc-up.sh
 ```
 
 This will run the application based on merged configurations from `docker-compose.yml` and `docker-compose.override.debug.yml`.
@@ -116,8 +157,8 @@ This will run the application based on merged configurations from `docker-compos
 Alternatively (if using docker for windows for example), you can copy the override file over (and re-create the containers):
 ```
 cp docker-compose.override.debug.yml docker-compose.override.yml
-docker-compose down
-docker-compose up
+./dc-down.sh
+./dc-up.sh
 ```
 
 The default configuration assumes port 3000 by default for debug.
@@ -164,9 +205,9 @@ docker-compose logs initializer | grep "Admin password:"
 
 Make sure you write down the first password generated as you'll need it when re-starting the application.
 
-## Option to change the password 
-* If you dont have admin password use the below command to change the password. 
-* After starting the container and open another tab in the same folder.  
+## Option to change the password
+* If you dont have admin password use the below command to change the password.
+* After starting the container and open another tab in the same folder.
 * django-defectdojo_uwsgi_1 -- name obtained from running containers using ```zsh docker ps ``` command
 
 ```zsh
@@ -181,7 +222,7 @@ For docker-compose release mode the log level is INFO. In the other modes the lo
 LOGGING['loggers']['dojo.specific-loggers.deduplication']['level'] = 'DEBUG'
 ```
 
-Or you can modify `settings.dist.py` directly, but this adds the risk of having conflicts when `settings.dist.py` gets updated upstream. 
+Or you can modify `settings.dist.py` directly, but this adds the risk of having conflicts when `settings.dist.py` gets updated upstream.
 
 ```
           'dojo.specific-loggers.deduplication': {
@@ -198,18 +239,18 @@ This toolbar allows you to debug SQL queries, and shows some other interesting i
 
 # Exploitation, versioning
 ## Disable the database initialization
-The initializer container can be disabled by exporting: `export DD_INITIALIZE=false`. 
+The initializer container can be disabled by exporting: `export DD_INITIALIZE=false`.
 
 This will ensure that the database remains unchanged when re-running the application, keeping your previous settings and admin password.
 
 ## Versioning
-In order to use a specific version when building the images and running the containers, set the environment with 
+In order to use a specific version when building the images and running the containers, set the environment with
 *  For the nginx image: `NGINX_VERSION=x.y.z`
 *  For the django image: `DJANGO_VERSION=x.y.z`
 
 Building will tag the images with "x.y.z", then you can run the application based on a specific tagged images.
 
-*  Tagged images can be seen with: 
+*  Tagged images can be seen with:
 
 ```
 $ docker images
@@ -219,7 +260,7 @@ defectdojo/defectdojo-nginx    1.0.0               bc9c5f7bb4e5        About an 
 
 *  This will show on which tagged images the containers are running:
 
-``` 
+```
 $ docker ps
 CONTAINER ID        IMAGE                                 COMMAND                  CREATED             STATUS              PORTS                                NAMES
 aedc404d6dee        defectdojo/defectdojo-nginx:1.0.0     "/entrypoint-nginx.sh"   2 minutes ago       Up 2 minutes        80/tcp, 0.0.0.0:8080->8080/tcp       django-defectdojo_nginx_1
@@ -231,49 +272,50 @@ aedc404d6dee        defectdojo/defectdojo-nginx:1.0.0     "/entrypoint-nginx.sh"
 Removes all containers
 
 ```zsh
-docker-compose down
+./dc-down.sh
 ```
 
 Removes all containers, networks and the database volume
 
 ```zsh
-docker-compose down --volumes
+./dc-down.sh --volumes
 ```
 
-# Run with docker using https
-## use your own  Credentials
+# Run with Docker Compose using https
+
+## Use your own credentials
 To secure the application by https, follow those steps
 *  Generate a private key without password
 *  Generate a CSR (Certificate Signing Request)
 *  Have the CSR signed by a certificate authority
 *  Place the private key and the certificate under the nginx folder
-*  copy your secrets into: 
+*  copy your secrets into:
 ```
         server_name                 your.servername.com;
         ssl_certificate             /etc/nginx/ssl/nginx.crt
         ssl_certificate_key        /etc/nginx/ssl/nginx.key;
 ```
 *set the GENERATE_TLS_CERTIFICATE != True in the docker-compose.override.https.yml
-* Protect your private key from other users: 
+* Protect your private key from other users:
 ```
 chmod 400 nginx/*.key
 ```
 
-* Run defectDojo with: 
+* Run defectDojo with:
 ```
 rm -f docker-compose.override.yml
 ln -s docker-compose.override.https.yml docker-compose.override.yml
-docker-compose up
+./dc-up.sh
 ```
 
-## create Credentials on the fly
-* you can generate a Certificate on the fly (without valid domainname etc.)
+## Create credentials on the fly
+* You can generate a Certificate on the fly (without valid domainname etc.)
 
-* Run defectDojo with: 
+* Run defectDojo with:
 ```
 rm -f docker-compose.override.yml
 ln -s docker-compose.override.https.yml docker-compose.override.yml
-docker-compose up
+./dc-up.sh
 ```
 
 The default https port is 8443.
@@ -286,18 +328,18 @@ To change the port:
 NB: some third party software may require to change the exposed port in Dockerfile.nginx as they use docker-compose declarations to discover which ports to map when publishing the application.
 
 
-# Run the tests with docker
+# Run the tests with Docker Compose
 The unit-tests are under `dojo/unittests`
 
 The integration-tests are under `tests`
 
 
-## Running the unit-tests
-This will run all unit-tests and leave the uwsgi container up: 
+## Running the unit tests
+This will run all unit-tests and leave the uwsgi container up:
 
 ```
 docker/setEnv.sh unit_tests
-docker-compose up
+./dc-up.sh
 ```
 Enter the container to run more tests:
 
@@ -307,30 +349,37 @@ docker-compose exec uwsgi bash
 Rerun all the tests:
 
 ```
-python manage.py test dojo.unittests --keepdb
+python manage.py test unittests --keepdb
 ```
 
 Run all the tests from a python file. Example:
 
 ```
-python manage.py test dojo.unittests.tools.test_dependency_check_parser --keepdb
+python manage.py test unittests.tools.test_dependency_check_parser --keepdb
 ```
 
 Run a single test. Example:
 
 ```
-python manage.py test dojo.unittests.tools.test_dependency_check_parser.TestDependencyCheckParser.test_parse_file_with_no_vulnerabilities_has_no_findings --keepdb
+python manage.py test unittests.tools.test_dependency_check_parser.TestDependencyCheckParser.test_parse_file_with_no_vulnerabilities_has_no_findings --keepdb
 ```
 
-## Running the integration-tests
-This will run all integration-tests and leave the containers up: 
+For docker compose stack, there is a convenience script (`dc-unittest.sh`) capable of running a single test class. 
+You will need to provide a docker compose profile (`--profile`), and a test case (`--test-case`). Example:
+
+```
+./dc-unittest.sh --profile mysql-rabbitmq --test-case unittests.tools.test_stackhawk_parser.TestStackHawkParser
+```
+
+## Running the integration tests
+This will run all integration-tests and leave the containers up:
 
 ```
 docker/setEnv.sh integration_tests
-docker-compose up
+./dc-up.sh
 ```
 
-NB: the first time you run it, initializing the database may be too long for the tests to succeed. In that case, you'll need to wait for the initializer container to end, then re-run `docker-compose up`
+NB: the first time you run it, initializing the database may be too long for the tests to succeed. In that case, you'll need to wait for the initializer container to end, then re-run `./dc-up.sh`
 
 Check the logs with:
 ```

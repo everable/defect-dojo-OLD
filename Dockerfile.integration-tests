@@ -1,7 +1,7 @@
 
 # code: language=Dockerfile
 
-FROM python:3.8.12-slim-buster@sha256:7e732593f25983fa7d4b2d54444be4a785f2397c1cf2f815d2e3638337eee012 as build
+FROM python:3.8.13-slim-bullseye@sha256:0e07cc072353e6b10de910d8acffa020a42467112ae6610aa90d6a3c56a74911 as build
 WORKDIR /app
 RUN \
   apt-get -y update && \
@@ -45,7 +45,8 @@ COPY tests/ ./tests/
 
 RUN chmod -R 0777 /app
 
-USER 1001
+ARG uid=1001
+USER ${uid}
 ENV \
   DD_ADMIN_USER=admin \
   DD_ADMIN_PASSWORD='' \

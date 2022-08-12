@@ -16,7 +16,7 @@ class GenericParser(object):
         return scan_type  # no custom label for now
 
     def get_description_for_scan_types(self, scan_type):
-        return "Import Generic findings in CSV format."
+        return "Import Generic findings in CSV or JSON format."
 
     def get_findings(self, filename, test, active=None, verified=None):
         if filename.name.lower().endswith(".csv"):
@@ -35,6 +35,16 @@ class GenericParser(object):
             if "endpoints" in item:
                 unsaved_endpoints = item["endpoints"]
                 del item["endpoints"]
+            # remove files of the dictionnary
+            unsaved_files = None
+            if "files" in item:
+                unsaved_files = item["files"]
+                del item["files"]
+            # remove vulnerability_ids of the dictionnary
+            unsaved_vulnerability_ids = None
+            if "vulnerability_ids" in item:
+                unsaved_vulnerability_ids = item["vulnerability_ids"]
+                del item["vulnerability_ids"]
 
             finding = Finding(**item)
             # manage active/verified overrride
@@ -46,17 +56,27 @@ class GenericParser(object):
             # manage endpoints
             if unsaved_endpoints:
                 finding.unsaved_endpoints = []
-                for item in unsaved_endpoints:
-                    if type(item) is str:
-                        if '://' in item:  # is the host full uri?
-                            endpoint = Endpoint.from_uri(item)
+                for endpoint_item in unsaved_endpoints:
+                    if type(endpoint_item) is str:
+                        if '://' in endpoint_item:  # is the host full uri?
+                            endpoint = Endpoint.from_uri(endpoint_item)
                             # can raise exception if the host is not valid URL
                         else:
-                            endpoint = Endpoint.from_uri('//' + item)
+                            endpoint = Endpoint.from_uri('//' + endpoint_item)
                             # can raise exception if there is no way to parse the host
                     else:
-                        endpoint = Endpoint(**item)
+                        endpoint = Endpoint(**endpoint_item)
                     finding.unsaved_endpoints.append(endpoint)
+
+            if unsaved_files:
+                finding.unsaved_files = unsaved_files
+            if finding.cve:
+                finding.unsaved_vulnerability_ids = [finding.cve]
+            if unsaved_vulnerability_ids:
+                if finding.unsaved_vulnerability_ids:
+                    finding.unsaved_vulnerability_ids.append(unsaved_vulnerability_ids)
+                else:
+                    finding.unsaved_vulnerability_ids = unsaved_vulnerability_ids
             findings.append(finding)
         return findings
 
@@ -96,8 +116,14 @@ class GenericParser(object):
             if 'FalsePositive' in row:
                 finding.false_p = self._convert_bool(row.get('FalsePositive', 'FALSE'))  # bool False by default
             # manage CVE
-            if 'CVE' in row:
-                finding.cve = row['CVE']
+            if 'CVE' in row and [row['CVE']]:
+                finding.unsaved_vulnerability_ids = [row['CVE']]
+            # manage Vulnerability Id
+            if 'Vulnerability Id' in row and row['Vulnerability Id']:
+                if finding.unsaved_vulnerability_ids:
+                    finding.unsaved_vulnerability_ids.append(row['Vulnerability Id'])
+                else:
+                    finding.unsaved_vulnerability_ids = [row['Vulnerability Id']]
             # manage CWE
             if 'CweId' in row:
                 finding.cwe = int(row['CweId'])
@@ -129,6 +155,10 @@ class GenericParser(object):
             if key in dupes:
                 find = dupes[key]
                 find.unsaved_endpoints.extend(finding.unsaved_endpoints)
+                if find.unsaved_vulnerability_ids:
+                    find.unsaved_vulnerability_ids.extend(finding.unsaved_vulnerability_ids)
+                else:
+                    find.unsaved_vulnerability_ids = finding.unsaved_vulnerability_ids
                 find.nb_occurences += 1
             else:
                 dupes[key] = finding

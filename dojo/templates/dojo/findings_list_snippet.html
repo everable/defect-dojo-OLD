@@ -46,9 +46,9 @@
                 <div class="clearfix">
                     {% include "dojo/paging_snippet.html" with page=findings page_size=True %}
                 </div>
-            {% if user.is_staff or 'AUTHORIZED_USERS_ALLOW_CHANGE'|setting_enabled or 'AUTHORIZED_USERS_ALLOW_DELETE'|setting_enabled or 'AUTHORIZED_USERS_ALLOW_STAFF'|setting_enabled or product_tab and product_tab.product|has_object_permission:"Finding_Edit" %}
+            {% if not product_tab or product_tab and product_tab.product|has_object_permission:"Finding_Edit" %}
             <div class="dropdown hidden" style="padding-bottom: 5px;" id="bulk_edit_menu">
-                {% if user.is_staff or 'AUTHORIZED_USERS_ALLOW_CHANGE'|setting_enabled or 'AUTHORIZED_USERS_ALLOW_STAFF'|setting_enabled or product_tab and product_tab.product|has_object_permission:"Finding_Edit" %}
+                {% if not product_tab or product_tab and product_tab.product|has_object_permission:"Finding_Edit" %}
                     <button class="btn btn-info btn-sm btn-primary dropdown-toggle" type="button" id="dropdownMenu2"
                             data-toggle="dropdown" aria-haspopup="true" aria-expanded="true">
                         Bulk Edit
@@ -63,7 +63,7 @@
                       </a>
                     </button>
                     {% endif %}
-                    {% if user.is_staff or 'AUTHORIZED_USERS_ALLOW_DELETE'|setting_enabled or 'AUTHORIZED_USERS_ALLOW_STAFF'|setting_enabled or product_tab and product_tab.product|has_object_permission:"Finding_Delete" %}
+                    {% if not product_tab or product_tab and product_tab.product|has_object_permission:"Finding_Delete" %}
                     <button type="button" class="btn btn-sm  btn-primary" data-toggle="tooltip" data-placement="bottom" title="Delete Findings">
                       <a class="white-color delete-bulk" href="#" alt="Delete Findings">
                         <i class="fa fa-trash"></i>
@@ -120,7 +120,7 @@
                                 <input id="id_bulk_risk_unaccept" name="risk_unaccept" type="checkbox" disabled/> <span>Unaccept</span>
                             </label>
 
-                            {% if 'FEATURE_FINDING_GROUPS'|setting_enabled %}
+                            {% if 'is_finding_groups_enabled'|system_setting_enabled %}
                             <label><b>Group</b></label>
                             <span style="font-size: 80%;">(Only available in per test for now)</span><br/>
                             {% endif %}
@@ -140,6 +140,13 @@
                             </label>
                             <br/>
                             {% endif %}
+                            <label style="display: block">Notes</label>
+                            {% comment %}
+                                Quick hack to make bulk edit work without refactoring the whole bulk edit form
+                                {{ bulk_edit_form.media.css }}
+                                {{ bulk_edit_form.media.js }}
+                            {% endcomment %}
+                            {{ bulk_edit_form.notes }}
                             <label style="display: block">Tags</label>
                             {% comment %}
                                 Quick hack to make bulk edit work without refactoring the whole bulk edit form
@@ -159,7 +166,7 @@
                            class="tablesorter-bootstrap table table-condensed table-striped table-hover">
                         <thead>
                         <tr>
-                          {% if user.is_staff or 'AUTHORIZED_USERS_ALLOW_CHANGE'|setting_enabled or 'AUTHORIZED_USERS_ALLOW_DELETE'|setting_enabled or 'AUTHORIZED_USERS_ALLOW_STAFF'|setting_enabled or product_tab and product_tab.product|has_object_permission:"Finding_Edit" %}
+                          {% if not product_tab or product_tab and product_tab.product|has_object_permission:"Finding_Edit" %}
                           <th class="hidden-sm centered" title="Select all visible findings.">
                               <div class="dropdown">
                                   <button class="btn btn-primary dropdown-toggle" type="button" id="dropdownMenu1"
@@ -185,7 +192,7 @@
                             <th class="nowrap centered">{% dojo_sort request 'Severity' 'numerical_severity' 'asc' %}</th>
                             <th class="nowrap">{% dojo_sort request 'Name' 'title' %}</th>
                             <th>CWE</th>
-                            <th>CVE</th>
+                            <th>Vulnerability Id</th>
                             {% if filter_name == 'Closed' %}
                             <th class="nowrap">{% dojo_sort request 'Closed Date' 'mitigated'%}</th>
                             {% else %}
@@ -205,7 +212,7 @@
                                 <th>JIRA Change</th>
                               {% endif %}
                             {% endif%}
-                            {% if 'FEATURE_FINDING_GROUPS'|setting_enabled %}
+                            {% if 'is_finding_groups_enabled'|system_setting_enabled %}
                                 <th>Group</th>
                             {% endif %}
                             {% if show_product_column and product_tab is None %}
@@ -217,7 +224,7 @@
                         <tbody>
                         {% for finding in findings %}
                             <tr class="{% if finding.active %}active_finding{% else %}inactive_finding{% endif %}">
-                                {% if user.is_staff or 'AUTHORIZED_USERS_ALLOW_CHANGE'|setting_enabled or 'AUTHORIZED_USERS_ALLOW_DELETE'|setting_enabled or 'AUTHORIZED_USERS_ALLOW_STAFF'|setting_enabled or product_tab and product_tab.product|has_object_permission:"Finding_Edit" %}
+                                {% if not product_tab or product_tab and product_tab.product|has_object_permission:"Finding_Edit" %}
                                   <td class="hidden-sm centered">
                                     <form action="#">
                                         <input type="checkbox" name="select_{{ finding.id }}" id="{{ finding.id }}"
@@ -235,14 +242,19 @@
                                             <i class="fa fa-arrow-circle-right"></i> View
                                           </a>
                                        </li>
-                                       {% if user|is_authorized_for_change:finding or finding|has_object_permission:"Finding_Edit" %}
+                                       {% if finding|has_object_permission:"Finding_Edit" %}
                                        <li>
                                           <a class="" href="{% url 'edit_finding' finding.id %}?return_url={{ request.get_full_path|urlencode }}">
                                           <i class="fa fa-pencil-square-o"></i> Edit
                                           </a>
                                        </li>
+                                       <li>
+                                          <a class="" href="{% url 'copy_finding' finding.id %}?return_url={{ request.get_full_path|urlencode }}"/>
+                                          <i class="fa fa-copy"></i> Copy
+                                          </a>
+                                        </li>
                                        {% endif %}
-                                       {% if user|is_authorized_for_staff:finding or finding|has_object_permission:"Finding_Edit" %}
+                                       {% if finding|has_object_permission:"Finding_Edit" %}
                                           <li class="divider"></li>
                                           {% if finding.under_review and dojo_user in finding.reviewers.all or dojo_user == finding.review_requested_by and finding.under_review %}
                                               <li role="presentation">
@@ -258,26 +270,28 @@
                                               </li>
                                           {% endif %}
                                        {% endif %}
-                                       {% if user|is_authorized_for_change:finding or finding|has_object_permission:"Finding_Edit" %}
+                                       {% if finding|has_object_permission:"Finding_Edit" %}
                                           <li role="presentation">
                                               <a href="{% url 'touch_finding' finding.id %}?return_url={{ request.get_full_path|urlencode }}">
                                                   <i class="fa fa-clock-o"></i> Touch Finding
                                               </a>
                                           </li>
                                        {% endif %}
-                                       {% if user.is_staff %}
+                                       {% if "dojo.add_finding_template"|has_configuration_permission %}
                                           <li role="presentation">
                                               <a href="{% url 'mktemplate' finding.id %}">
                                                   <i class="fa fa-copy"></i> Make Finding a Template
                                               </a>
                                           </li>
+                                       {% endif %}
+                                       {% if finding|has_object_permission:"Finding_Edit" and "dojo.view_finding_template"|has_configuration_permission %}
                                           <li role="presentation">
                                               <a href="{% url 'find_template_to_apply' finding.id %}">
                                                   <i class="fa fa-copy"></i> Apply Template to Finding
                                               </a>
                                           </li>
                                        {% endif %}
-                                       {% if user|is_authorized_for_change:finding or finding|has_object_permission:"Finding_Edit" %}
+                                       {% if finding|has_object_permission:"Finding_Edit" %}
                                         {% if finding.active %}
                                             <li role="presentation">
                                                 <a href="{% url 'close_finding' finding.id %}">
@@ -293,7 +307,7 @@
                                         {% endif %}
                                        {% endif %}
                                        <li class="divider"></li>
-                                        {% if user|is_authorized_for_staff:finding or finding|has_object_permission:"Risk_Acceptance" %}
+                                        {% if finding|has_object_permission:"Risk_Acceptance" %}
                                           {% if finding.risk_accepted %}
                                               <li role="presentation">
                                               <a href="{% url 'risk_unaccept_finding' finding.id %}?return_url={{ request.get_full_path|urlencode }}">
@@ -324,7 +338,7 @@
                                                <i class="fa fa-history"></i> View History
                                            </a>
                                        </li>
-                                       {% if user|is_authorized_for_delete:finding or finding|has_object_permission:"Finding_Delete" %}
+                                       {% if finding|has_object_permission:"Finding_Delete" %}
                                           <li class="divider"></li>
                                           <li>
                                             <form method="post" action="{% url 'delete_finding' finding.id %}"
@@ -381,11 +395,7 @@
                                         ({{ finding.notes.count }})
                                     </a>
                                   {% endif %}
-                                  <sup>
-                                      {% for tag in finding.tags.all %}
-                                      <a title="Search {{ tag }}" class="tag-label tag-color" href="{% url 'simple_search' %}?query=tag:{{ tag }}">{{ tag }}</a>
-                                      {% endfor %}
-                                  </sup>
+                                  {% include "dojo/snippets/tags.html" with tags=finding.tags.all %}
                                 </td>
                                 <td class="nowrap">
                                   {% if finding.cwe > 0 %}
@@ -395,11 +405,17 @@
                                   {% endif %}
                                 </td>
                                 <td class="nowrap">
-                                  {% if finding.cve %}
-                                    <a target="_blank" href="{{ finding.cve|cve_url }}">
-                                        <i class="fa fa-external-link"></i> {{ finding.cve|default:"" }}
-                                    </a>
+                                    {% with finding|first_vulnerability_id as first_vulnerability_id %}
+                                    {% if first_vulnerability_id %}  
+                                    {% if first_vulnerability_id|has_vulnerability_url %}
+                                        <a target="_blank" href="{{ first_vulnerability_id|vulnerability_url }}">
+                                            <i class="fa fa-external-link"></i> {{ first_vulnerability_id }}
+                                        </a>
+                                    {% else %}
+                                        {{ first_vulnerability_id }}
+                                    {% endif %}
                                   {% endif %}
+                                  {% endwith %}
                                 </td>
                                 {% if filter_name == 'Closed' %}
                                   <td class="nowrap">{{ finding.mitigated|date }}</td>
@@ -451,12 +467,10 @@
                                     </td>
                                   {% endif %}
                                 {% endif %}
-                                {% if 'FEATURE_FINDING_GROUPS'|setting_enabled %}
+                                {% if 'is_finding_groups_enabled'|system_setting_enabled %}
                                 <td class="centered">
                                     {% if finding.has_finding_group %}
-                                    <a href="{% url 'view_finding_group' finding.finding_group.id %}" title="{{ finding.finding_group.name }}">Y</a>
-                                    {% else %}
-                                    N
+                                    <a href="{% url 'view_finding_group' finding.finding_group.id %}" title="{{ finding.finding_group.name }}">{{ finding.finding_group.name }}</a>
                                     {% endif %}
                                 </td>
                                 {% endif %}
@@ -495,9 +509,7 @@
             date =  new Date().toISOString().slice(0, 10);
             var fileDated = 'Findings_List_' + date;
             var columns = [
-                {% if user.is_staff or 'AUTHORIZED_USERS_ALLOW_CHANGE'|setting_enabled or 'AUTHORIZED_USERS_ALLOW_DELETE'|setting_enabled or 'AUTHORIZED_USERS_ALLOW_STAFF'|setting_enabled %}
                 { "data": "checkbox" },
-                {% endif %}
                 { "data": "action" },
                 { "data": "severity" },
                 { "data": "finding" , render: function (data, type, row) {
@@ -520,7 +532,7 @@
                     { "data": "jira_change" },
                   {% endif %}
                 {% endif %}
-                {% if 'FEATURE_FINDING_GROUPS'|setting_enabled %}
+                {% if 'is_finding_groups_enabled'|system_setting_enabled %}
                   { "data": "grouped" },
                 {% endif %}
                 {% if show_product_column and product_tab is None %}

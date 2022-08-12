@@ -11,7 +11,7 @@ from django.contrib.auth.models import User
 from django.conf import settings
 from django.contrib import messages
 from django.core.exceptions import ValidationError, PermissionDenied
-from django.urls import reverse
+from django.urls import reverse, Resolver404
 from django.db.models import Q, Count
 from django.http import HttpResponseRedirect, StreamingHttpResponse, HttpResponse, FileResponse, QueryDict
 from django.shortcuts import render, get_object_or_404
@@ -32,11 +32,11 @@ from dojo.forms import CheckForm, \
 from dojo.models import Finding, Product, Engagement, Test, \
     Check_List, Test_Import, Notes, \
     Risk_Acceptance, Development_Environment, Endpoint, \
-    Cred_Mapping, Dojo_User, System_Settings, Note_Type, Product_API_Scan_Configuration
-from dojo.tools.factory import get_choices_sorted
+    Cred_Mapping, System_Settings, Note_Type, Product_API_Scan_Configuration
+from dojo.tools.factory import get_scan_types_sorted
 from dojo.utils import add_error_message_to_response, add_success_message_to_response, get_page_items, add_breadcrumb, handle_uploaded_threat, \
-    FileIterWrapper, get_cal_event, Product_Tab, is_scan_file_too_large, \
-    get_system_setting, redirect_to_return_url_or_else, get_return_url
+    FileIterWrapper, get_cal_event, Product_Tab, is_scan_file_too_large, async_delete, \
+    get_system_setting, get_setting, redirect_to_return_url_or_else, get_return_url, calculate_grade
 from dojo.notifications.helper import create_notification
 from dojo.finding.views import find_available_notetypes
 from functools import reduce
@@ -50,6 +50,7 @@ from dojo.authorization.authorization import user_has_permission_or_403
 from dojo.authorization.roles_permissions import Permissions
 from dojo.product.queries import get_authorized_products
 from dojo.engagement.queries import get_authorized_engagements
+from dojo.user.queries import get_authorized_users
 from dojo.authorization.authorization_decorators import user_is_authorized
 from dojo.importers.importer.importer import DojoDefaultImporter as Importer
 import dojo.notifications.helper as notifications_helper
@@ -62,6 +63,10 @@ logger = logging.getLogger(__name__)
 @cache_page(60 * 5)  # cache for 5 minutes
 @vary_on_cookie
 def engagement_calendar(request):
+
+    if not get_system_setting('enable_calendar'):
+        raise Resolver404()
+
     if 'lead' not in request.GET or '0' in request.GET.getlist('lead'):
         engagements = get_authorized_engagements(Permissions.Engagement_View)
     else:
@@ -83,7 +88,7 @@ def engagement_calendar(request):
             'caltype': 'engagements',
             'leads': request.GET.getlist('lead', ''),
             'engagements': engagements,
-            'users': Dojo_User.objects.all()
+            'users': get_authorized_users(Permissions.Engagement_View)
         })
 
 
@@ -200,7 +205,7 @@ def engagements_all(request):
         })
 
 
-@user_is_authorized(Engagement, Permissions.Engagement_Edit, 'eid', 'change')
+@user_is_authorized(Engagement, Permissions.Engagement_Edit, 'eid')
 def edit_engagement(request, eid):
     engagement = Engagement.objects.get(pk=eid)
     is_ci_cd = engagement.engagement_type == "CI/CD"
@@ -265,7 +270,7 @@ def edit_engagement(request, eid):
     else:
         title = 'Edit Interactive Engagement'
 
-    product_tab = Product_Tab(engagement.product.id, title=title, tab="engagements")
+    product_tab = Product_Tab(engagement.product, title=title, tab="engagements")
     product_tab.setEngagement(engagement)
     return render(request, 'dojo/new_eng.html', {
         'product_tab': product_tab,
@@ -278,7 +283,7 @@ def edit_engagement(request, eid):
     })
 
 
-@user_is_authorized(Engagement, Permissions.Engagement_Delete, 'eid', 'delete')
+@user_is_authorized(Engagement, Permissions.Engagement_Delete, 'eid')
 def delete_engagement(request, eid):
     engagement = get_object_or_404(Engagement, pk=eid)
     product = engagement.product
@@ -289,11 +294,17 @@ def delete_engagement(request, eid):
             form = DeleteEngagementForm(request.POST, instance=engagement)
             if form.is_valid():
                 product = engagement.product
-                engagement.delete()
+                if get_setting("ASYNC_OBJECT_DELETE"):
+                    async_del = async_delete()
+                    async_del.delete(engagement)
+                    message = 'Engagement and relationships will be removed in the background.'
+                else:
+                    message = 'Engagement and relationships removed.'
+                    engagement.delete()
                 messages.add_message(
                     request,
                     messages.SUCCESS,
-                    'Engagement and relationships removed.',
+                    message,
                     extra_tags='alert-success')
                 create_notification(event='other',
                                     title='Deletion of %s' % engagement.name,
@@ -305,11 +316,14 @@ def delete_engagement(request, eid):
 
                 return HttpResponseRedirect(reverse("view_engagements", args=(product.id, )))
 
-    collector = NestedObjects(using=DEFAULT_DB_ALIAS)
-    collector.collect([engagement])
-    rels = collector.nested()
+    rels = ['Previewing the relationships has been disabled.', '']
+    display_preview = get_setting('DELETE_PREVIEW')
+    if display_preview:
+        collector = NestedObjects(using=DEFAULT_DB_ALIAS)
+        collector.collect([engagement])
+        rels = collector.nested()
 
-    product_tab = Product_Tab(product.id, title="Delete Engagement", tab="engagements")
+    product_tab = Product_Tab(product, title="Delete Engagement", tab="engagements")
     product_tab.setEngagement(engagement)
     return render(request, 'dojo/delete_engagement.html', {
         'product_tab': product_tab,
@@ -319,7 +333,48 @@ def delete_engagement(request, eid):
     })
 
 
-@user_is_authorized(Engagement, Permissions.Engagement_View, 'eid', 'view')
+@user_is_authorized(Engagement, Permissions.Engagement_Edit, 'eid')
+def copy_engagement(request, eid):
+    engagement = get_object_or_404(Engagement, id=eid)
+    product = engagement.product
+    form = DoneForm()
+
+    if request.method == 'POST':
+        form = DoneForm(request.POST)
+        if form.is_valid():
+            engagement_copy = engagement.copy()
+            calculate_grade(product)
+            messages.add_message(
+                request,
+                messages.SUCCESS,
+                'Engagement Copied successfully.',
+                extra_tags='alert-success')
+            create_notification(event='other',
+                                title='Copying of %s' % engagement.name,
+                                description='The engagement "%s" was copied by %s' % (engagement.name, request.user),
+                                product=product,
+                                url=request.build_absolute_uri(reverse('view_engagement', args=(engagement_copy.id, ))),
+                                recipients=[engagement.lead],
+                                icon="exclamation-triangle")
+            return redirect_to_return_url_or_else(request, reverse("view_engagements", args=(product.id, )))
+        else:
+            messages.add_message(
+                request,
+                messages.ERROR,
+                'Unable to copy engagement, please try again.',
+                extra_tags='alert-danger')
+
+    product_tab = Product_Tab(product, title="Copy Engagement", tab="engagements")
+    return render(request, 'dojo/copy_object.html', {
+        'source': engagement,
+        'source_label': 'Engagement',
+        'destination_label': 'Product',
+        'product_tab': product_tab,
+        'form': form,
+    })
+
+
+@user_is_authorized(Engagement, Permissions.Engagement_View, 'eid')
 def view_engagement(request, eid):
     eng = get_object_or_404(Engagement, id=eid)
     tests = eng.test_set.all().order_by('test_type__name', '-updated')
@@ -355,11 +410,7 @@ def view_engagement(request, eid):
     form = DoneForm()
     files = eng.files.all()
     if request.method == 'POST':
-        if settings.FEATURE_AUTHORIZATION_V2:
-            user_has_permission_or_403(request.user, eng, Permissions.Note_Add)
-        else:
-            if not request.user.is_staff:
-                raise PermissionDenied
+        user_has_permission_or_403(request.user, eng, Permissions.Note_Add)
         eng.progress = 'check_list'
         eng.save()
 
@@ -399,7 +450,7 @@ def view_engagement(request, eid):
     title = ""
     if eng.engagement_type == "CI/CD":
         title = " CI/CD"
-    product_tab = Product_Tab(prod.id, title="View" + title + " Engagement", tab="engagements")
+    product_tab = Product_Tab(prod, title="View" + title + " Engagement", tab="engagements")
     product_tab.setEngagement(eng)
     return render(
         request, 'dojo/view_eng.html', {
@@ -443,7 +494,7 @@ def prefetch_for_view_tests(tests):
     return prefetched
 
 
-@user_is_authorized(Engagement, Permissions.Test_Add, 'eid', 'staff')
+@user_is_authorized(Engagement, Permissions.Test_Add, 'eid')
 def add_tests(request, eid):
     eng = Engagement.objects.get(id=eid)
     cred_form = CredMappingForm()
@@ -457,6 +508,8 @@ def add_tests(request, eid):
             engagement=eng).order_by('cred_id')
         if form.is_valid():
             new_test = form.save(commit=False)
+            # set default scan_type as it's used in reimport
+            new_test.scan_type = new_test.test_type.name
             new_test.engagement = eng
             try:
                 new_test.lead = User.objects.get(id=form['lead'].value())
@@ -508,7 +561,7 @@ def add_tests(request, eid):
         form.initial['lead'] = request.user
     add_breadcrumb(
         parent=eng, title="Add Tests", top_level=False, request=request)
-    product_tab = Product_Tab(eng.product.id, title="Add Tests", tab="engagements")
+    product_tab = Product_Tab(eng.product, title="Add Tests", tab="engagements")
     product_tab.setEngagement(eng)
     return render(request, 'dojo/add_tests.html', {
         'product_tab': product_tab,
@@ -535,14 +588,10 @@ def import_scan_results(request, eid=None, pid=None):
     elif pid:
         product = get_object_or_404(Product, id=pid)
         engagement_or_product = product
-    elif not user.is_staff:
-        raise PermissionDenied
-
-    if settings.FEATURE_AUTHORIZATION_V2:
-        user_has_permission_or_403(user, engagement_or_product, Permissions.Import_Scan_Result)
     else:
-        if not user_is_authorized(user, 'staff', engagement_or_product):
-            raise PermissionDenied
+        raise Exception('Either Engagement or Product has to be provided')
+
+    user_has_permission_or_403(user, engagement_or_product, Permissions.Import_Scan_Result)
 
     push_all_jira_issues = jira_helper.is_push_all_issues(engagement_or_product)
 
@@ -615,7 +664,7 @@ def import_scan_results(request, eid=None, pid=None):
 
             try:
                 importer = Importer()
-                test, finding_count, closed_finding_count = importer.import_scan(scan, scan_type, engagement, user, environment, active=active, verified=verified, tags=tags,
+                test, finding_count, closed_finding_count, _ = importer.import_scan(scan, scan_type, engagement, user, environment, active=active, verified=verified, tags=tags,
                             minimum_severity=minimum_severity, endpoints_to_add=list(form.cleaned_data['endpoints']) + added_endpoints, scan_date=scan_date,
                             version=version, branch_tag=branch_tag, build_id=build_id, commit_hash=commit_hash, push_to_jira=push_to_jira,
                             close_old_findings=close_old_findings, group_by=group_by, api_scan_configuration=api_scan_configuration, service=service)
@@ -655,13 +704,11 @@ def import_scan_results(request, eid=None, pid=None):
     custom_breadcrumb = None
     title = "Import Scan Results"
     if engagement:
-        prod_id = engagement.product.id
-        product_tab = Product_Tab(prod_id, title=title, tab="engagements")
+        product_tab = Product_Tab(engagement.product, title=title, tab="engagements")
         product_tab.setEngagement(engagement)
     else:
-        prod_id = pid
         custom_breadcrumb = {"", ""}
-        product_tab = Product_Tab(prod_id, title=title, tab="findings")
+        product_tab = Product_Tab(product, title=title, tab="findings")
 
     if jira_helper.get_jira_project(engagement_or_product):
         jform = JIRAImportScanForm(push_all=push_all_jira_issues, prefix='jiraform')
@@ -677,11 +724,11 @@ def import_scan_results(request, eid=None, pid=None):
          'title': title,
          'cred_form': cred_form,
          'jform': jform,
-         'scan_types': get_choices_sorted(),
+         'scan_types': get_scan_types_sorted(),
          })
 
 
-@user_is_authorized(Engagement, Permissions.Engagement_Edit, 'eid', 'staff')
+@user_is_authorized(Engagement, Permissions.Engagement_Edit, 'eid')
 def close_eng(request, eid):
     eng = Engagement.objects.get(id=eid)
     close_engagement(eng)
@@ -697,7 +744,7 @@ def close_eng(request, eid):
     return HttpResponseRedirect(reverse("view_engagements", args=(eng.product.id, )))
 
 
-@user_is_authorized(Engagement, Permissions.Engagement_Edit, 'eid', 'staff')
+@user_is_authorized(Engagement, Permissions.Engagement_Edit, 'eid')
 def reopen_eng(request, eid):
     eng = Engagement.objects.get(id=eid)
     reopen_engagement(eng)
@@ -721,7 +768,7 @@ method to complete checklists from the engagement view
 """
 
 
-@user_is_authorized(Engagement, Permissions.Engagement_Edit, 'eid', 'staff')
+@user_is_authorized(Engagement, Permissions.Engagement_Edit, 'eid')
 def complete_checklist(request, eid):
     eng = get_object_or_404(Engagement, id=eid)
     try:
@@ -763,7 +810,7 @@ def complete_checklist(request, eid):
         findings = Finding.objects.filter(test__in=tests).all()
         form = CheckForm(instance=checklist, findings=findings)
 
-    product_tab = Product_Tab(eng.product.id, title="Checklist", tab="engagements")
+    product_tab = Product_Tab(eng.product, title="Checklist", tab="engagements")
     product_tab.setEngagement(eng)
     return render(request, 'dojo/checklist.html', {
         'form': form,
@@ -773,7 +820,7 @@ def complete_checklist(request, eid):
     })
 
 
-@user_is_authorized(Engagement, Permissions.Risk_Acceptance, 'eid', 'staff')
+@user_is_authorized(Engagement, Permissions.Risk_Acceptance, 'eid')
 def add_risk_acceptance(request, eid, fid=None):
     eng = get_object_or_404(Engagement, id=eid)
     finding = None
@@ -833,7 +880,7 @@ def add_risk_acceptance(request, eid, fid=None):
     form.fields['accepted_findings'].queryset = finding_choices
     if fid:
         form.fields['accepted_findings'].initial = {fid}
-    product_tab = Product_Tab(eng.product.id, title="Risk Acceptance", tab="engagements")
+    product_tab = Product_Tab(eng.product, title="Risk Acceptance", tab="engagements")
     product_tab.setEngagement(eng)
 
     return render(request, 'dojo/add_risk_acceptance.html', {
@@ -843,12 +890,12 @@ def add_risk_acceptance(request, eid, fid=None):
                   })
 
 
-@user_is_authorized(Engagement, Permissions.Engagement_View, 'eid', 'view')
+@user_is_authorized(Engagement, Permissions.Engagement_View, 'eid')
 def view_risk_acceptance(request, eid, raid):
     return view_edit_risk_acceptance(request, eid=eid, raid=raid, edit_mode=False)
 
 
-@user_is_authorized(Engagement, Permissions.Risk_Acceptance, 'eid', 'staff')
+@user_is_authorized(Engagement, Permissions.Risk_Acceptance, 'eid')
 def edit_risk_acceptance(request, eid, raid):
     return view_edit_risk_acceptance(request, eid=eid, raid=raid, edit_mode=True)
 
@@ -990,7 +1037,7 @@ def view_edit_risk_acceptance(request, eid, raid, edit_mode=False):
     add_findings_form.fields[
         "accepted_findings"].queryset = add_fpage.object_list
 
-    product_tab = Product_Tab(eng.product.id, title="Risk Acceptance", tab="engagements")
+    product_tab = Product_Tab(eng.product, title="Risk Acceptance", tab="engagements")
     product_tab.setEngagement(eng)
     return render(
         request, 'dojo/view_risk_acceptance.html', {
@@ -1012,7 +1059,7 @@ def view_edit_risk_acceptance(request, eid, raid, edit_mode=False):
         })
 
 
-@user_is_authorized(Engagement, Permissions.Risk_Acceptance, 'eid', 'staff')
+@user_is_authorized(Engagement, Permissions.Risk_Acceptance, 'eid')
 def expire_risk_acceptance(request, eid, raid):
     risk_acceptance = get_object_or_404(prefetch_for_expiration(Risk_Acceptance.objects.all()), pk=raid)
     eng = get_object_or_404(Engagement, pk=eid)
@@ -1022,7 +1069,7 @@ def expire_risk_acceptance(request, eid, raid):
     return redirect_to_return_url_or_else(request, reverse("view_risk_acceptance", args=(eid, raid)))
 
 
-@user_is_authorized(Engagement, Permissions.Risk_Acceptance, 'eid', 'staff')
+@user_is_authorized(Engagement, Permissions.Risk_Acceptance, 'eid')
 def reinstate_risk_acceptance(request, eid, raid):
     risk_acceptance = get_object_or_404(prefetch_for_expiration(Risk_Acceptance.objects.all()), pk=raid)
     eng = get_object_or_404(Engagement, pk=eid)
@@ -1035,7 +1082,7 @@ def reinstate_risk_acceptance(request, eid, raid):
     return redirect_to_return_url_or_else(request, reverse("view_risk_acceptance", args=(eid, raid)))
 
 
-@user_is_authorized(Engagement, Permissions.Risk_Acceptance, 'eid', 'staff')
+@user_is_authorized(Engagement, Permissions.Risk_Acceptance, 'eid')
 def delete_risk_acceptance(request, eid, raid):
     risk_acceptance = get_object_or_404(Risk_Acceptance, pk=raid)
     eng = get_object_or_404(Engagement, pk=eid)
@@ -1050,7 +1097,7 @@ def delete_risk_acceptance(request, eid, raid):
     return HttpResponseRedirect(reverse("view_engagement", args=(eng.id, )))
 
 
-@user_is_authorized(Engagement, Permissions.Engagement_View, 'eid', 'view')
+@user_is_authorized(Engagement, Permissions.Engagement_View, 'eid')
 def download_risk_acceptance(request, eid, raid):
     import mimetypes
 
@@ -1076,7 +1123,7 @@ under media folder
 """
 
 
-@user_is_authorized(Engagement, Permissions.Engagement_Edit, 'eid', 'staff')
+@user_is_authorized(Engagement, Permissions.Engagement_Edit, 'eid')
 def upload_threatmodel(request, eid):
     eng = Engagement.objects.get(id=eid)
     add_breadcrumb(
@@ -1101,7 +1148,7 @@ def upload_threatmodel(request, eid):
                 reverse('view_engagement', args=(eid, )))
     else:
         form = UploadThreatForm()
-    product_tab = Product_Tab(eng.product.id, title="Upload Threat Model", tab="engagements")
+    product_tab = Product_Tab(eng.product, title="Upload Threat Model", tab="engagements")
     return render(request, 'dojo/up_threat.html', {
         'form': form,
         'product_tab': product_tab,
@@ -1109,14 +1156,14 @@ def upload_threatmodel(request, eid):
     })
 
 
-@user_is_authorized(Engagement, Permissions.Engagement_View, 'eid', 'staff')
+@user_is_authorized(Engagement, Permissions.Engagement_View, 'eid')
 def view_threatmodel(request, eid):
     eng = get_object_or_404(Engagement, pk=eid)
     response = FileResponse(open(eng.tmodel_path, 'rb'))
     return response
 
 
-@user_is_authorized(Engagement, Permissions.Engagement_View, 'eid', 'staff')
+@user_is_authorized(Engagement, Permissions.Engagement_View, 'eid')
 def engagement_ics(request, eid):
     eng = get_object_or_404(Engagement, id=eid)
     start_date = datetime.combine(eng.target_start, datetime.min.time())
